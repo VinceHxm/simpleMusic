@@ -1,0 +1,14 @@
+.git
+.cursor
+**/node_modules
+**/.vite
+server/webui/dist
+server/data
+data
+deploy
+docs
+**/*.md
+**/*.exe
+simplemusic
+**/.vscode
+**/.DS_Store
