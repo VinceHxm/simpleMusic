@@ -89,7 +89,6 @@ export const api = {
   star: (id, kind, on) =>
     request(on ? 'POST' : 'DELETE', `/api/star/${enc(id)}?kind=${kind}`).then((res) => (clearApiCache(), res)),
   scrobble: (id, submission) => request('POST', `/api/scrobble/${enc(id)}?submission=${submission ? 'true' : 'false'}`),
-  prefetch: (id) => request('POST', '/api/prefetch/' + enc(id)),
   lyrics: (song) =>
     cachedGet(`/api/lyrics/${enc(song.id)}?artist=${enc(song.artist || '')}&title=${enc(song.title || '')}`),
 }

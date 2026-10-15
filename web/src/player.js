@@ -35,8 +35,16 @@ const state = {
 // 播放进度每秒触发好几次，单独一个频道，避免整页跟着重渲染拖慢老设备。
 const channels = { state: [], progress: [] }
 let audio = null
+// 当前歌曲播放时把下一首完整下载到内存，切歌时同一个播放器直接换成本地数据。
+// 小米等系统息屏后会限制后台联网，切歌时再去请求新地址就会停在那里不播。
+// 不能换成第二个 Audio：iOS 和安卓 WebView 要求每个播放器都由用户点过才允许自动播放。
+let nextId = ''
+let nextUrl = ''
+let nextXhr = null
+let audioBlob = ''
+// 当前歌曲缓冲完或只剩这么多秒时才下载下一首，免得和当前歌曲抢带宽。
+const PRELOAD_TAIL = 30
 let scrobbled = false
-let prefetched = ''
 let mediaLine = ''
 
 // 随机模式不打乱队列本身，而是按 order 里的下标顺序播放，pos 是当前歌曲在 order 中的位置。
@@ -161,14 +169,16 @@ function ensureAudio() {
   }
   audio.addEventListener('playing', () => {
     set({ playing: true, loading: false, error: '' })
-    prefetchNext()
+    maybePreload()
   })
   audio.addEventListener('pause', () => set({ playing: false }))
   audio.addEventListener('waiting', () => set({ loading: true }))
+  audio.addEventListener('progress', maybePreload)
   audio.addEventListener('timeupdate', () => {
     state.current = audio.currentTime
     emit('progress')
     maybeScrobble()
+    maybePreload()
   })
   audio.addEventListener('durationchange', () => {
     const d = audio.duration
@@ -185,6 +195,28 @@ function ensureAudio() {
   return audio
 }
 
+function dropNext() {
+  if (nextXhr) {
+    nextXhr.abort()
+    nextXhr = null
+  }
+  if (nextUrl) window.URL.revokeObjectURL(nextUrl)
+  nextId = ''
+  nextUrl = ''
+}
+
+// blob 为 true 表示 url 是本地数据，换下一个地址时要释放掉。
+function setSrc(url, blob) {
+  if (audioBlob) window.URL.revokeObjectURL(audioBlob)
+  audioBlob = blob ? url : ''
+  if (url) {
+    audio.src = url
+  } else {
+    audio.removeAttribute('src')
+    audio.load()
+  }
+}
+
 function maybeScrobble() {
   const song = currentSong()
   if (scrobbled || !song) return
@@ -195,25 +227,53 @@ function maybeScrobble() {
   }
 }
 
-function prefetchNext() {
+function maybePreload() {
+  const d = audio.duration
+  if (!isFinite(d) || d <= 0) return
+  const b = audio.buffered
+  if (d - audio.currentTime < PRELOAD_TAIL || (b.length && b.end(b.length - 1) >= d - 1)) preloadNext()
+}
+
+// 请求流地址时服务端会顺带转码，下载失败就留到切歌时再走网络。
+function preloadNext() {
   const i = peekNext(true)
   const song = i >= 0 && i !== state.index ? state.queue[i] : null
-  if (song && prefetched !== song.id) {
-    prefetched = song.id
-    api.prefetch(song.id).catch(() => {})
+  if (!song || nextId === song.id) return
+  dropNext()
+  if (!window.URL || !window.URL.createObjectURL) return
+  nextId = song.id
+  const xhr = new XMLHttpRequest()
+  nextXhr = xhr
+  xhr.open('GET', streamUrl(song.id), true)
+  xhr.responseType = 'blob'
+  xhr.onload = () => {
+    if (nextXhr !== xhr) return
+    nextXhr = null
+    if (xhr.status === 200 && xhr.response) nextUrl = window.URL.createObjectURL(xhr.response)
   }
+  xhr.onerror = () => {
+    if (nextXhr === xhr) nextXhr = null
+  }
+  xhr.send()
 }
 
 function load(autoplay) {
   const song = currentSong()
   if (!song) return
   const el = ensureAudio()
+  if (nextId === song.id && nextUrl) {
+    const url = nextUrl
+    nextId = ''
+    nextUrl = ''
+    setSrc(url, true)
+  } else {
+    setSrc(streamUrl(song.id))
+  }
   scrobbled = false
   state.current = 0
   state.duration = song.duration || 0
   set({ loading: autoplay, error: '' })
   emit('progress')
-  el.src = streamUrl(song.id)
   if (autoplay) {
     const p = el.play()
     if (p && p.catch) p.catch(() => set({ playing: false, loading: false }))
@@ -297,7 +357,7 @@ export function setMode(mode) {
   } catch (e) {}
   save()
   emit('state')
-  if (state.playing) prefetchNext()
+  if (state.playing) maybePreload()
 }
 
 export function cycleMode() {
@@ -414,8 +474,9 @@ export function restore() {
 export function reset() {
   if (audio) {
     audio.pause()
-    audio.removeAttribute('src')
+    setSrc('')
   }
+  dropNext()
   state.queue = []
   state.index = -1
   order = []
