@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'preact/hooks'
 import { api, saveServer, savedServer, setUnauthorizedHandler } from './api'
 import { Icon } from './components/Icon'
-import { FullPlayer, PlayerBar } from './components/Player'
+import { FullPlayer, PlayerBar, QueuePopover } from './components/Player'
 import { reset, restore, usePlayer } from './player'
 import { href, useRoute } from './router'
 import { Albums } from './views/Albums'
@@ -46,8 +46,10 @@ export function App() {
   const [user, setUser] = useState(null)
   const [bootError, setBootError] = useState('')
   const [expanded, setExpanded] = useState(false)
+  const [queueOpen, setQueueOpen] = useState(false)
   const route = useRoute()
   const player = usePlayer()
+  const hasPlayer = player.queue.length > 0
 
   const boot = () => {
     setBootError('')
@@ -100,6 +102,15 @@ export function App() {
     document.documentElement.className = expanded ? 'no-scroll' : ''
   }, [expanded])
 
+  // 换页或队列被清空时，别让气泡留在屏幕上。
+  useEffect(() => {
+    setQueueOpen(false)
+  }, [route.name, route.id])
+
+  useEffect(() => {
+    if (!hasPlayer) setQueueOpen(false)
+  }, [hasPlayer])
+
   const openSetup = () => setPhase('setup')
 
   if (phase === 'boot')
@@ -148,7 +159,6 @@ export function App() {
   }
 
   const tab = ACTIVE_TAB[route.name] || route.name
-  const hasPlayer = player.queue.length > 0
 
   return (
     <div class={'app' + (hasPlayer ? ' has-player' : '')}>
@@ -186,7 +196,15 @@ export function App() {
           <a onClick={logout}>退出登录</a>
         </div>
       </main>
-      <PlayerBar onExpand={() => setExpanded(true)} />
+      <PlayerBar
+        onExpand={() => {
+          setQueueOpen(false)
+          setExpanded(true)
+        }}
+        onToggleQueue={() => setQueueOpen(!queueOpen)}
+        queueOpen={queueOpen}
+      />
+      {queueOpen && hasPlayer && !expanded ? <QueuePopover onClose={() => setQueueOpen(false)} /> : null}
       {expanded ? <FullPlayer onClose={() => setExpanded(false)} /> : null}
     </div>
   )

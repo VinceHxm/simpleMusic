@@ -9,7 +9,7 @@ export const MODES = [
   { id: 'one', name: '单曲循环', icon: 'repeatOne' },
   { id: 'loop', name: '列表循环', icon: 'repeat' },
   { id: 'shuffleLoop', name: '随机循环', icon: 'shuffle' },
-  { id: 'list', name: '列表播放', icon: 'playlist' },
+  { id: 'list', name: '顺序播放', icon: 'playlist' },
   { id: 'shuffle', name: '随机播放', icon: 'shuffleOnce' },
 ]
 
@@ -47,12 +47,17 @@ const PRELOAD_TAIL = 30
 let scrobbled = false
 let mediaLine = ''
 
-// 随机模式不打乱队列本身，而是按 order 里的下标顺序播放，pos 是当前歌曲在 order 中的位置。
+// 随机模式按“轮”组织：rounds[roundIdx - baseRound] 是当前轮及之后各轮的下标顺序，
+// pos 是当前歌曲在当轮中的位置。轮次按需往后生成，队列列表可以一直往下铺。
 // 这样切换模式时队列显示不变，“上一首”也能按随机顺序往回退。
-let order = []
+let rounds = []
+let baseRound = 0
+let roundIdx = 0
 let pos = 0
-// 随机循环下一轮的顺序，播到最后一首时提前生成，好预转码下一轮的第一首。
-let nextRound = null
+// 列表循环已经播完的整轮数，用来算出当前歌曲在“一直往下滚”的队列里是第几行。
+let laps = 0
+// 队列列表最多回看这么多行，避免长时间循环后 DOM 无限增长。
+const QUEUE_BACK = 80
 
 function emit(channel) {
   channels[channel].slice().forEach((fn) => fn())
@@ -93,14 +98,6 @@ export function currentTime() {
   return state.current
 }
 
-// 播放列表的展示顺序（队列下标）：随机模式按实际播放顺序，其余按队列原顺序。
-export function playOrder() {
-  if (isShuffle(state.mode) && order.length === state.queue.length) return order
-  const list = []
-  for (let i = 0; i < state.queue.length; i++) list.push(i)
-  return list
-}
-
 function isShuffle(mode) {
   return mode === 'shuffle' || mode === 'shuffleLoop'
 }
@@ -115,24 +112,110 @@ function shuffleInPlace(list) {
   return list
 }
 
+function currentRound() {
+  return rounds[roundIdx - baseRound] || []
+}
+
+// 当前歌曲在整条“一直往下滚”的队列里的序号。随机模式每一轮长度都等于队列长度。
+function activeSeq() {
+  const n = state.queue.length
+  if (isShuffle(state.mode)) return roundIdx * n + pos
+  if (state.mode === 'loop') return laps * n + state.index
+  return state.index
+}
+
 // 当前歌曲排第一，其余随机。
 function buildOrder() {
   const rest = []
   for (let i = 0; i < state.queue.length; i++) if (i !== state.index) rest.push(i)
   shuffleInPlace(rest)
-  order = state.index >= 0 ? [state.index].concat(rest) : rest
+  rounds = [state.index >= 0 ? [state.index].concat(rest) : rest]
+  baseRound = 0
+  roundIdx = 0
   pos = 0
-  nextRound = null
 }
 
-// 新一轮重新洗牌，并避免第一首正好是刚播完的那首。
-function newRound() {
-  const list = shuffleInPlace(order.slice())
-  if (list.length > 1 && list[0] === state.index) {
+// 以最后一轮为基础重新洗牌，并避免第一首正好是上一轮刚播完的那首。
+function newRound(after) {
+  const prev = rounds.length ? rounds[rounds.length - 1] : []
+  const list = shuffleInPlace(prev.slice())
+  if (list.length > 1 && list[0] === after) {
     list[0] = list[list.length - 1]
-    list[list.length - 1] = state.index
+    list[list.length - 1] = after
   }
   return list
+}
+
+// g 是全局轮次编号；轮次按需生成，列表提前往下铺时和真正播放时取到的是同一份。
+function ensureRound(g) {
+  if (g < baseRound) return false
+  while (baseRound + rounds.length <= g) {
+    const prev = rounds.length ? rounds[rounds.length - 1] : []
+    const after = prev.length ? prev[prev.length - 1] : state.index
+    rounds.push(newRound(after))
+  }
+  return true
+}
+
+// 只保留当前轮附近几轮，长时间循环也不会一直吃内存。
+function pruneRounds() {
+  while (rounds.length > 6 && roundIdx - baseRound > 4) {
+    rounds.shift()
+    baseRound++
+  }
+}
+
+function occurrenceAt(seq) {
+  const n = state.queue.length
+  if (isShuffle(state.mode)) {
+    const r = Math.floor(seq / n)
+    if (!ensureRound(r)) return -1
+    const round = rounds[r - baseRound]
+    const index = round ? round[seq % n] : -1
+    return index >= 0 ? index : -1
+  }
+  return seq % n
+}
+
+// 队列展示窗口：始终包含当前歌曲。当前轮快播完时，提前把下一轮接在下面；
+// 随机循环提前生成的下一轮和真正播到的是同一份数据，所以列表不会跳变。
+export function queueView() {
+  const n = state.queue.length
+  if (!n) return { rows: [], active: -1 }
+  const active = activeSeq()
+  // 只有一首歌时循环没有“下一段”可言，重复铺同样的行没有意义。
+  if (n === 1) return { rows: [{ seq: active, index: 0 }], active: active }
+
+  // 当前轮只剩这么多首时补下一轮；队列很短时也至少留两首，避免一打开就重复。
+  const prepend = Math.min(6, Math.max(2, Math.floor(n / 3)))
+  let start = active - QUEUE_BACK
+  let end = active
+  if (isShuffle(state.mode)) {
+    const oldest = baseRound * n
+    if (start < oldest) start = oldest
+    end = (roundIdx + 1) * n - 1
+    if (state.mode === 'shuffleLoop' && pos >= n - prepend) {
+      ensureRound(roundIdx + 1)
+      end = (roundIdx + 2) * n - 1
+    }
+  } else if (state.mode === 'loop') {
+    if (start < 0) start = 0
+    const round = Math.floor(active / n)
+    end = (round + 1) * n - 1
+    if (active % n >= n - prepend) end = (round + 2) * n - 1
+  } else if (state.mode === 'list') {
+    if (start < 0) start = 0
+    end = n - 1
+  } else {
+    start = 0
+    end = n - 1
+  }
+  const rows = []
+  for (let seq = start; seq <= end; seq++) {
+    const index = occurrenceAt(seq)
+    if (index >= 0) rows.push({ seq: seq, index: index })
+  }
+  return { rows: rows, active: active }
 }
 
 // auto 表示一首播完自动切歌；手动点“下一首”时单曲循环也照常往后切。返回 -1 表示停止。
@@ -142,10 +225,12 @@ function peekNext(auto) {
   const mode = state.mode
   if (mode === 'one' && auto) return state.index
   if (isShuffle(mode)) {
-    if (pos + 1 < order.length) return order[pos + 1]
+    const round = currentRound()
+    if (pos + 1 < round.length) return round[pos + 1]
     if (mode !== 'shuffleLoop') return -1
-    if (!nextRound) nextRound = newRound()
-    return nextRound[0]
+    ensureRound(roundIdx + 1)
+    const next = rounds[roundIdx + 1 - baseRound]
+    return next && next.length ? next[0] : -1
   }
   if (state.index + 1 < n) return state.index + 1
   return mode === 'list' ? -1 : 0
@@ -309,40 +394,87 @@ function advance(auto) {
     return
   }
   if (isShuffle(state.mode)) {
-    if (pos + 1 < order.length) {
+    if (pos + 1 < currentRound().length) {
       pos++
     } else {
-      order = nextRound || newRound()
-      nextRound = null
+      ensureRound(roundIdx + 1)
+      roundIdx++
       pos = 0
+      pruneRounds()
     }
+  } else if (state.mode === 'loop' && i === 0 && state.index === state.queue.length - 1) {
+    laps++
   }
   state.index = i
   load(true)
 }
 
+// shuffle 为 true 时把传入的列表本身打乱；播放模式沿用当前模式。
 export function playList(songs, start, shuffle) {
   if (!songs || !songs.length) return
   state.queue = shuffle ? shuffleInPlace(songs.slice()) : songs.slice()
-  state.index = shuffle ? 0 : start || 0
-  if (isShuffle(state.mode)) buildOrder()
+  state.index = shuffle ? 0 : Math.min(Math.max(start || 0, 0), songs.length - 1)
+  laps = 0
+  if (isShuffle(state.mode)) {
+    buildOrder()
+  } else {
+    rounds = []
+    baseRound = 0
+    roundIdx = 0
+    pos = 0
+  }
   load(true)
 }
 
-export function playAt(index) {
-  if (index < 0 || index >= state.queue.length) return
-  // 随机模式下播放列表按随机顺序展示，点哪首就从那里接着往下播，和顺序模式一致。
-  if (isShuffle(state.mode)) {
-    const j = order.indexOf(index)
-    if (j >= 0) {
-      pos = j
-    } else {
-      order.splice(pos + 1, 0, index)
-      pos++
-    }
-    nextRound = null
+// 专辑、歌单页的“按指定模式从头播放”：先把模式切过去，再重排队列并从头播。
+export function playAll(songs, mode) {
+  if (!songs || !songs.length) return
+  if (mode && mode !== state.mode) {
+    state.mode = mode
+    try {
+      window.localStorage.setItem(MODE_KEY, mode)
+    } catch (e) {}
   }
-  state.index = index
+  const shuffle = isShuffle(state.mode)
+  state.queue = shuffle ? shuffleInPlace(songs.slice()) : songs.slice()
+  state.index = 0
+  laps = 0
+  if (shuffle) {
+    buildOrder()
+  } else {
+    rounds = []
+    baseRound = 0
+    roundIdx = 0
+    pos = 0
+  }
+  load(true)
+}
+
+// seq 是这一行在滚动队列里的序号；点重复出现的同一首歌时，从点中的那一段接着播。
+export function playAt(index, seq) {
+  const n = state.queue.length
+  if (index < 0 || index >= n) return
+  if (isShuffle(state.mode)) {
+    if (seq != null && isFinite(seq)) {
+      const r = Math.floor(seq / n)
+      const within = seq % n
+      if (ensureRound(r) && rounds[r - baseRound] && rounds[r - baseRound][within] === index) {
+        roundIdx = r
+        pos = within
+        state.index = index
+        pruneRounds()
+        load(true)
+        return
+      }
+    }
+    // 没带队列位置（例如曲目列表点歌）：在当前轮里定位，找不到就重新洗牌。
+    const j = currentRound().indexOf(index)
+    if (j >= 0) pos = j
+    else buildOrder()
+  } else {
+    state.index = index
+    laps = seq != null && isFinite(seq) && state.mode === 'loop' ? Math.max(0, Math.floor(seq / n)) : 0
+  }
   load(true)
 }
 
@@ -350,8 +482,16 @@ export function setMode(mode) {
   if (mode === state.mode) return
   const wasShuffle = isShuffle(state.mode)
   state.mode = mode
-  if (isShuffle(mode) && !wasShuffle) buildOrder()
-  nextRound = null
+  // 换模式时重新以当前歌曲为起点铺队列，避免带着上一模式的轮数跳到很远的位置。
+  laps = 0
+  if (isShuffle(mode)) {
+    if (!wasShuffle) buildOrder()
+  } else {
+    rounds = []
+    baseRound = 0
+    roundIdx = 0
+    pos = 0
+  }
   try {
     window.localStorage.setItem(MODE_KEY, mode)
   } catch (e) {}
@@ -392,18 +532,25 @@ export function prev() {
   if (isShuffle(state.mode)) {
     if (pos > 0) {
       pos--
-      state.index = order[pos]
-      load(true)
+    } else if (roundIdx > baseRound) {
+      roundIdx--
+      pos = currentRound().length - 1
+    } else {
+      return
     }
+    state.index = currentRound()[pos]
+    load(true)
     return
   }
   if (state.index > 0) {
     state.index--
-    load(true)
   } else if (state.mode !== 'list' && state.queue.length > 1) {
     state.index = state.queue.length - 1
-    load(true)
+    if (state.mode === 'loop') laps = Math.max(0, laps - 1)
+  } else {
+    return
   }
+  load(true)
 }
 
 export function seek(ratio) {
@@ -441,9 +588,9 @@ export function setMediaLine(line) {
 // iOS 隐私模式下 localStorage 写入会抛异常，读写都要包一层。
 function save() {
   try {
-    const data = { queue: state.queue, index: state.index }
+    const data = { queue: state.queue, index: state.index, laps: laps }
     if (isShuffle(state.mode)) {
-      data.order = order
+      data.order = currentRound()
       data.pos = pos
     }
     window.localStorage.setItem(STORAGE_KEY, JSON.stringify(data))
@@ -457,14 +604,22 @@ export function restore() {
       state.queue = saved.queue
       state.index = Math.min(Math.max(saved.index, 0), saved.queue.length - 1)
       state.duration = currentSong().duration || 0
+      laps = state.mode === 'loop' ? Math.max(0, saved.laps || 0) : 0
       if (isShuffle(state.mode)) {
         const o = saved.order
         if (o && o.length === saved.queue.length && o[saved.pos] === state.index) {
-          order = o
+          rounds = [o]
+          baseRound = 0
+          roundIdx = 0
           pos = saved.pos
         } else {
           buildOrder()
         }
+      } else {
+        rounds = []
+        baseRound = 0
+        roundIdx = 0
+        pos = 0
       }
       emit('state')
     }
@@ -479,9 +634,11 @@ export function reset() {
   dropNext()
   state.queue = []
   state.index = -1
-  order = []
+  rounds = []
+  baseRound = 0
+  roundIdx = 0
   pos = 0
-  nextRound = null
+  laps = 0
   set({ playing: false, loading: false, error: '' })
   try {
     window.localStorage.removeItem(STORAGE_KEY)

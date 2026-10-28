@@ -3,7 +3,7 @@ import { blurUrl, coverUrl } from '../api'
 import { fmtTime } from '../hooks'
 import { href } from '../router'
 import { lockLyricsOn, lockLyricsSupported, setLockLyrics } from '../lockLyrics'
-import { MODES, currentSong, cycleMode, next, playAt, playOrder, prev, seek, toggle, usePlayer, useProgress } from '../player'
+import { MODES, currentSong, cycleMode, next, playAt, prev, queueView, seek, toggle, usePlayer, useProgress } from '../player'
 import { Cover } from './common'
 import { Icon } from './Icon'
 import { Lyrics } from './Lyrics'
@@ -268,7 +268,7 @@ function ModeButton({ labeled }) {
   )
 }
 
-export function PlayerBar({ onExpand }) {
+export function PlayerBar({ onExpand, onToggleQueue, queueOpen }) {
   usePlayer()
   const song = currentSong()
   if (!song) return null
@@ -296,6 +296,16 @@ export function PlayerBar({ onExpand }) {
           <Slider />
         </div>
       </div>
+      {/* 手机上没有其它播放列表入口，这里给一个拇指容易够到的队列按钮 */}
+      <button
+        class={'icon-btn hide-desktop queue-trigger' + (queueOpen ? ' is-on' : '')}
+        onClick={onToggleQueue}
+        aria-label="播放列表"
+        aria-expanded={queueOpen}
+        title="播放列表"
+      >
+        <Icon name="queue" />
+      </button>
       <div class="player-bar-right hide-mobile">
         <ModeButton />
         <button class="icon-btn" onClick={onExpand} aria-label="播放列表">
@@ -309,24 +319,38 @@ export function PlayerBar({ onExpand }) {
 function Queue({ show, onPick }) {
   const p = usePlayer()
   const box = useRef(null)
+  const hold = useRef(0)
+  // 队列是一条一直往下延伸的时间线：前后各取一段渲染，当前歌曲永远在窗口里。
+  const view = queueView()
+  const total = p.queue.length
 
-  // 打开列表或切换模式后，把当前歌曲滚到第二行，下面紧跟着就是接下来要播的。
+  // 切歌、切模式、打开列表后，把当前歌曲滚到视口偏上的位置，下面留出接下来要播的歌。
   useEffect(() => {
     const el = box.current
-    const row = el && el.querySelector('.queue-active')
-    if (row && el.clientHeight) el.scrollTop = Math.max(0, row.offsetTop - el.offsetTop - row.offsetHeight)
-  }, [show, p.mode])
+    if (!el) return
+    const row = el.querySelector('.queue-active')
+    if (!row) return
+    // 用户刚在列表里拖动或点过，就先别抢滚动位置，等下一次切歌再接管。
+    if (Date.now() - hold.current < 1200) return
+    const top = row.getBoundingClientRect().top - el.getBoundingClientRect().top
+    el.scrollTop = Math.max(0, el.scrollTop + top - el.clientHeight * 0.35)
+  }, [show, p.mode, total, view.active])
+
+  const touched = () => {
+    hold.current = Date.now()
+  }
 
   return (
-    <ol class="queue" ref={box}>
-      {playOrder().map((i) => {
-        const s = p.queue[i]
+    <ol class="queue" ref={box} onTouchStart={touched} onMouseDown={touched} onWheel={touched}>
+      {view.rows.map((row) => {
+        const s = p.queue[row.index]
+        const roundStart = row.seq > 0 && row.seq % total === 0
         return (
           <li
-            key={s.id + '_' + i}
-            class={'queue-item' + (i === p.index ? ' queue-active' : '')}
+            key={row.seq}
+            class={'queue-item' + (row.seq === view.active ? ' queue-active' : '') + (roundStart ? ' queue-round' : '')}
             onClick={() => {
-              playAt(i)
+              playAt(row.index, row.seq)
               if (onPick) onPick()
             }}
           >
@@ -336,6 +360,35 @@ function Queue({ show, onPick }) {
         )
       })}
     </ol>
+  )
+}
+
+// 小屏底部播放条上的队列入口：贴着播放条弹出，点外面、再点按钮或关闭键收起。
+export function QueuePopover({ onClose }) {
+  const p = usePlayer()
+  useEffect(() => {
+    const onKey = (e) => {
+      if (e.key === 'Escape' || e.keyCode === 27) onClose()
+    }
+    document.addEventListener('keydown', onKey)
+    return () => document.removeEventListener('keydown', onKey)
+  }, [onClose])
+  if (!p.queue.length) return null
+  return (
+    <div>
+      <div class="queue-pop-mask" onClick={onClose} />
+      <div class="queue-pop" role="dialog" aria-label="播放列表">
+        <div class="queue-pop-head">
+          <span class="queue-pop-title">播放列表</span>
+          <span class="queue-pop-count">{p.queue.length} 首</span>
+          <button class="icon-btn queue-pop-close" onClick={onClose} aria-label="收起播放列表">
+            <Icon name="close" size={20} />
+          </button>
+        </div>
+        <Queue show onPick={onClose} />
+        <span class="queue-pop-arrow" />
+      </div>
+    </div>
   )
 }
 
@@ -377,7 +430,7 @@ export function FullPlayer({ onClose }) {
             <button class={'icon-btn' + (showLyrics && !showQueue ? ' is-on' : '')} onClick={toggleLyrics} aria-label="歌词">
               <Icon name="lyrics" />
             </button>
-            <button class={'icon-btn hide-desktop' + (showQueue ? ' is-on' : '')} onClick={() => setShowQueue(!showQueue)} aria-label="播放列表">
+            <button class={'icon-btn only-narrow' + (showQueue ? ' is-on' : '')} onClick={() => setShowQueue(!showQueue)} aria-label="播放列表">
               <Icon name="queue" />
             </button>
             {showCoverMenu ? <CoverMenu pref={coverPref} onChange={changeCover} onClose={() => setShowCoverMenu(false)} /> : null}

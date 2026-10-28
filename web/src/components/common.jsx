@@ -2,7 +2,7 @@ import { useEffect, useRef } from 'preact/hooks'
 import { coverUrl } from '../api'
 import { lazyBackground } from '../lazy'
 import { href } from '../router'
-import { currentSong, playList, usePlayer } from '../player'
+import { currentSong, playAll, playList, usePlayer } from '../player'
 import { fmtTime } from '../hooks'
 import { Icon } from './Icon'
 
@@ -72,16 +72,31 @@ export function TrackList({ songs, showCover }) {
   )
 }
 
+// 专辑、歌单页直接列出四种起播方式，循环和不循环各自可选，
+// 不用先去播放器里把模式切对再回来点播放。
+const PLAY_MODES = [
+  { id: 'list', name: '顺序播放', icon: 'playlist' },
+  { id: 'loop', name: '列表循环', icon: 'repeat' },
+  { id: 'shuffle', name: '随机播放', icon: 'shuffleOnce' },
+  { id: 'shuffleLoop', name: '随机循环', icon: 'shuffle' },
+]
+
 export function PlayButtons({ songs }) {
+  const p = usePlayer()
   if (!songs || !songs.length) return null
   return (
-    <div class="btn-row">
-      <button class="btn btn-primary" onClick={() => playList(songs, 0)}>
-        <Icon name="play" size={20} /> 播放全部
-      </button>
-      <button class="btn" onClick={() => playList(songs, 0, true)}>
-        <Icon name="shuffle" size={20} /> 随机播放
-      </button>
+    <div class="btn-row play-modes">
+      {PLAY_MODES.map((m) => (
+        <button
+          key={m.id}
+          class={'btn' + (p.mode === m.id ? ' is-on' : '')}
+          onClick={() => playAll(songs, m.id)}
+          title={m.name}
+          aria-label={m.name}
+        >
+          <Icon name={m.icon} size={20} /> {m.name}
+        </button>
+      ))}
     </div>
   )
 }

@@ -122,6 +122,20 @@ h3 {
   margin: 0 10px 10px 0;
 }
 
+/* 专辑/歌单页的四种起播方式，当前全局模式高亮 */
+.play-modes .btn {
+  padding: 0 14px;
+}
+
+.play-modes .btn .icon {
+  margin-right: 5px;
+}
+
+.play-modes .btn.is-on {
+  background: #ff6b4a;
+  color: #fff;
+}
+
 .icon-btn {
   display: inline-flex;
   align-items: center;
@@ -346,6 +360,13 @@ h3 {
 
 @media (max-width: 767px) {
   .hide-mobile {
+    display: none !important;
+  }
+}
+
+/* 全屏播放页的队列按钮在窄屏和中等宽度平板都保留，宽屏用右侧固定列表 */
+@media (min-width: 900px) {
+  .only-narrow {
     display: none !important;
   }
 }
@@ -996,6 +1017,13 @@ h3 {
   display: flex;
   align-items: center;
   justify-content: center;
+}
+
+/* 手机播放条右侧的队列按钮，拇指容易够到 */
+.queue-trigger {
+  flex-shrink: 0;
+  margin-left: 2px;
+  margin-right: 2px;
 }
 
 @media (min-width: 768px) {
@@ -1769,6 +1797,137 @@ h3 {
 .queue-item:active,
 .queue-item:hover {
   background: rgba(255, 255, 255, 0.06);
+}
+
+/* 循环时队列会接着铺下一轮，用一条细线标出每轮的分界 */
+.queue-round {
+  margin-top: 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.08);
+}
+
+/* ---------- 小屏播放列表气泡 ---------- */
+
+.queue-pop-mask {
+  position: fixed;
+  z-index: 28;
+  top: 0;
+  left: 0;
+  right: 0;
+  bottom: 130px;
+  bottom: calc(130px + constant(safe-area-inset-bottom));
+  bottom: calc(130px + env(safe-area-inset-bottom));
+  background: transparent;
+}
+
+.queue-pop {
+  position: fixed;
+  z-index: 29;
+  left: 8px;
+  right: 8px;
+  bottom: 130px;
+  bottom: calc(130px + constant(safe-area-inset-bottom));
+  bottom: calc(130px + env(safe-area-inset-bottom));
+  display: flex;
+  flex-direction: column;
+  max-height: 52vh;
+  padding: 4px 8px 8px;
+  border-radius: 16px;
+  background: #222631;
+  box-shadow: 0 18px 48px rgba(0, 0, 0, 0.55);
+  -webkit-animation: queue-pop-in 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+  animation: queue-pop-in 0.18s cubic-bezier(0.16, 1, 0.3, 1);
+}
+
+@-webkit-keyframes queue-pop-in {
+  from {
+    opacity: 0;
+    -webkit-transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    -webkit-transform: translateY(0);
+  }
+}
+
+@keyframes queue-pop-in {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.queue-pop-head {
+  display: flex;
+  flex-shrink: 0;
+  align-items: center;
+  height: 44px;
+  padding-left: 8px;
+}
+
+.queue-pop-title {
+  font-size: 15px;
+  font-weight: 600;
+}
+
+.queue-pop-count {
+  margin-left: 8px;
+  color: #8d93a3;
+  font-size: 12px;
+}
+
+.queue-pop-close {
+  width: 44px;
+  height: 44px;
+  margin-left: auto;
+  color: #b4b9c6;
+}
+
+.queue-pop .queue {
+  flex: 1;
+  min-height: 0;
+  padding: 0 2px;
+}
+
+.queue-pop-arrow {
+  position: absolute;
+  right: 18px;
+  bottom: -5px;
+  width: 12px;
+  height: 12px;
+  background: #222631;
+  -webkit-transform: rotate(45deg);
+  transform: rotate(45deg);
+}
+
+@media (min-width: 480px) {
+  .queue-pop {
+    left: auto;
+    width: 380px;
+  }
+}
+
+@media (min-width: 768px) {
+  .queue-pop,
+  .queue-pop-mask {
+    display: none !important;
+  }
+}
+
+@media (max-height: 560px) and (orientation: landscape) {
+  .queue-pop {
+    max-height: calc(100vh - 150px);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .queue-pop {
+    -webkit-animation: none;
+    animation: none;
+  }
 }
 
 .queue-active .track-title {
